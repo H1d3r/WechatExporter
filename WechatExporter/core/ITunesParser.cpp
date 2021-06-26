@@ -16,6 +16,7 @@
 #include <libxml/tree.h>
 #include <libxml/parser.h>
 
+#include "MbdbReader.h"
 #include "OSDef.h"
 #include "Utils.h"
 #include "FileSystem.h"
@@ -130,7 +131,7 @@ inline std::string PlistDictionary::toString(const xmlChar* ch, int len)
     return std::string(p, p + len);
 }
 
-ITunesDb::ITunesDb(const std::string& rootPath, const std::string& manifestFileName) : m_rootPath(rootPath), m_manifestFileName(manifestFileName)
+ITunesDb::ITunesDb(const std::string& rootPath, const std::string& manifestFileName) : m_isMbdb(false), m_rootPath(rootPath), m_manifestFileName(manifestFileName)
 {
     std::replace(m_rootPath.begin(), m_rootPath.end(), DIR_SEP_R, DIR_SEP);
     
@@ -168,8 +169,16 @@ bool ITunesDb::load(const std::string& domain, bool onlyFile)
         m_version = manifest.getITunesVersion();
         m_iOSVersion = manifest.getIOSVersion();
     }
-        
-    std::string dbPath = combinePath(m_rootPath, m_manifestFileName);
+    
+    std::string dbPath = combinePath(m_rootPath, "Manifest.mbdb");
+    if (existsFile(dbPath))
+    {
+        m_isMbdb = true;
+        return loadMbdb(domain, onlyFile);
+    }
+    
+    m_isMbdb = false;
+    dbPath = combinePath(m_rootPath, "Manifest.db");
     
     sqlite3 *db = NULL;
     int rc = openSqlite3ReadOnly(dbPath, &db);
@@ -278,6 +287,107 @@ bool ITunesDb::load(const std::string& domain, bool onlyFile)
     return true;
 }
 
+bool ITunesDb::loadMbdb(const std::string& domain, bool onlyFile)
+{
+    MbdbReader reader;
+    if (!reader.open(combinePath(m_rootPath, "Manifest.mbdb")))
+    {
+        return false;
+    }
+    
+    
+    unsigned char mdbxBuffer[26];  // buffer for .mbdx record
+    std::string sb;           // stringbuilder for the Key
+    unsigned char data[40];                         // buffer for the fixed part of .mbdb record
+    // SHA1CryptoServiceProvider hasher = new SHA1CryptoServiceProvider();
+
+    // System.DateTime unixEpoch = new System.DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc);
+
+    // loop through the records
+    while (reader.hasMoreData())
+    {
+        // MBFileRecord rec = new MBFileRecord();
+        std::string domainInFile;
+        std::string path;
+        std::string linkTarget;
+        std::string dataHash;
+        std::string alwaysNull;
+        
+#ifndef NDEBUG
+        std::ifstream::streampos pos = reader.getPos();
+#endif
+        
+        reader.read(domainInFile);
+
+        reader.read(path);
+        reader.read(linkTarget);
+        reader.readD(dataHash);
+        reader.readD(alwaysNull);
+        
+        unsigned char fixedData[40] = { 0 };
+        
+        reader.read(fixedData, 40);
+        /*
+        mbdb.Read(data, 0, 40);
+
+        rec.data = toHex(data, 2, 4, 4, 4, 4, 4, 4, 4, 8, 1, 1);
+
+        rec.Mode = BigEndianBitConverter.ToUInt16(data, 0);
+        rec.alwaysZero = BigEndianBitConverter.ToInt32(data, 2);
+        rec.inode = BigEndianBitConverter.ToUInt32(data, 6);
+        rec.UserId = BigEndianBitConverter.ToUInt32(data, 10);      // or maybe GroupId (don't care...)
+        rec.GroupId = BigEndianBitConverter.ToUInt32(data, 14);     // or maybe UserId
+
+        rec.aTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 18));
+        rec.bTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 22));
+        rec.cTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 26));
+
+        rec.FileLength = BigEndianBitConverter.ToInt64(data, 30);
+
+        rec.flag = data[38];
+         */
+        
+        int propertyCount = fixedData[39];
+        
+        // rec.Properties = new MBFileRecord.Property[rec.PropertyCount];
+        for (int j = 0; j < propertyCount; ++j)
+        {
+            std::string name;
+            std::string value;
+            reader.read(name);
+            reader.read(value);
+            
+            // reader.skipString();
+            // reader.skipString();
+        }
+
+        
+        /*
+        StringBuilder fileName = new StringBuilder();
+        byte[] fb = hasher.ComputeHash(ASCIIEncoding.UTF8.GetBytes(rec.Domain + "-" + rec.Path));
+        for (int k = 0; k < fb.Length; k++)
+        {
+            fileName.Append(fb[k].ToString("x2"));
+        }
+
+        rec.key = fileName.ToString();
+         */
+        
+        std::string fileId = md5(domain + "-" + path);
+
+        if (domainInFile == domain)
+        {
+            ITunesFile *file = new ITunesFile();
+            file->relativePath = path;
+            file->fileId = fileId;
+            
+            m_files.push_back(file);
+        }
+    }
+
+    return true;
+}
+
 unsigned int ITunesDb::parseModifiedTime(const std::vector<unsigned char>& data)
 {
     uint64_t val = 0;
@@ -326,7 +436,7 @@ std::string ITunesDb::fileIdToRealPath(const std::string& fileId) const
 {
     if (!fileId.empty())
     {
-        return combinePath(m_rootPath, fileId.substr(0, 2), fileId);
+        return m_isMbdb ? combinePath(m_rootPath, fileId) : combinePath(m_rootPath, fileId.substr(0, 2), fileId);
     }
     
     return std::string();
@@ -342,7 +452,6 @@ std::string ITunesDb::findRealPath(const std::string& relativePath) const
     std::string fieldId = findFileId(relativePath);
     return fileIdToRealPath(fieldId);
 }
-
 
 bool ITunesDb::copyFile(const std::string& vpath, const std::string& dest, bool overwrite/* = false*/) const
 {
@@ -491,12 +600,14 @@ bool ManifestParser::isValidBackupItem(const std::string& path) const
         return false;
     }
 
-    fileName = combinePath(path, "Manifest.db");
-    if (!existsFile(fileName))
+    // < iOS 10: Manifest.mbdb
+    // >= iOS 10: Manifest.db
+    if (!existsFile(combinePath(path, "Manifest.db")) && !existsFile(combinePath(path, "Manifest.mbdb")))
     {
-        m_lastError += "Manifest.db not found\r\n";
+        m_lastError += "Manifest.db/Manifest.mbdb not found\r\n";
         return false;
     }
+    
     return true;
 }
 
