@@ -16,6 +16,16 @@
 #include <libxml/tree.h>
 #include <libxml/parser.h>
 
+#include <sys/stat.h>
+#if defined(_WIN32)
+// #define S_IFMT          0170000         /* [XSI] type of file mask */
+// #define S_IFDIR         0040000         /* [XSI] directory */
+#define S_ISDIR(m)      (((m) & S_IFMT) == S_IFDIR)     /* directory */
+
+#else
+#include <unistd.h>
+#endif
+
 #include "MbdbReader.h"
 #include "OSDef.h"
 #include "Utils.h"
@@ -295,94 +305,161 @@ bool ITunesDb::loadMbdb(const std::string& domain, bool onlyFile)
         return false;
     }
     
-    
-    unsigned char mdbxBuffer[26];  // buffer for .mbdx record
-    std::string sb;           // stringbuilder for the Key
-    unsigned char data[40];                         // buffer for the fixed part of .mbdb record
+    unsigned char mdbxBuffer[26];           // buffer for .mbdx record
+    unsigned char fixedData[40] = { 0 };    // buffer for the fixed part of .mbdb record
     // SHA1CryptoServiceProvider hasher = new SHA1CryptoServiceProvider();
 
     // System.DateTime unixEpoch = new System.DateTime(1970, 1, 1, 0, 0, 0, 0, DateTimeKind.Utc);
 
-    // loop through the records
+    std::string domainInFile;
+    std::string path;
+    std::string linkTarget;
+    std::string dataHash;
+    std::string alwaysNull;
+    unsigned short fileMode = 0;
+    bool isDir = false;
+    unsigned int mtime = 0;
+    bool skipped = false;
+
     while (reader.hasMoreData())
     {
-        // MBFileRecord rec = new MBFileRecord();
-        std::string domainInFile;
-        std::string path;
-        std::string linkTarget;
-        std::string dataHash;
-        std::string alwaysNull;
-        
 #ifndef NDEBUG
         std::ifstream::streampos pos = reader.getPos();
 #endif
         
-        reader.read(domainInFile);
-
-        reader.read(path);
-        reader.read(linkTarget);
-        reader.readD(dataHash);
-        reader.readD(alwaysNull);
-        
-        unsigned char fixedData[40] = { 0 };
-        
-        reader.read(fixedData, 40);
-        /*
-        mbdb.Read(data, 0, 40);
-
-        rec.data = toHex(data, 2, 4, 4, 4, 4, 4, 4, 4, 8, 1, 1);
-
-        rec.Mode = BigEndianBitConverter.ToUInt16(data, 0);
-        rec.alwaysZero = BigEndianBitConverter.ToInt32(data, 2);
-        rec.inode = BigEndianBitConverter.ToUInt32(data, 6);
-        rec.UserId = BigEndianBitConverter.ToUInt32(data, 10);      // or maybe GroupId (don't care...)
-        rec.GroupId = BigEndianBitConverter.ToUInt32(data, 14);     // or maybe UserId
-
-        rec.aTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 18));
-        rec.bTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 22));
-        rec.cTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 26));
-
-        rec.FileLength = BigEndianBitConverter.ToInt64(data, 30);
-
-        rec.flag = data[38];
-         */
-        
-        int propertyCount = fixedData[39];
-        
-        // rec.Properties = new MBFileRecord.Property[rec.PropertyCount];
-        for (int j = 0; j < propertyCount; ++j)
+        if (!reader.read(domainInFile))
         {
-            std::string name;
-            std::string value;
-            reader.read(name);
-            reader.read(value);
+            break;
+        }
+        
+        skipped = false;
+        if (!domain.empty() && domain != domainInFile)
+        {
+            skipped = true;
+        }
+        
+        if (skipped)
+        {
+            // will skip it
+            reader.skipString();    // path
+            reader.skipString();    // linkTarget
+            reader.skipString();    // dataHash
+            reader.skipString();    // alwaysNull;
             
-            // reader.skipString();
-            // reader.skipString();
-        }
+            reader.read(fixedData, 40);
+            /*
+            mbdb.Read(data, 0, 40);
 
-        
-        /*
-        StringBuilder fileName = new StringBuilder();
-        byte[] fb = hasher.ComputeHash(ASCIIEncoding.UTF8.GetBytes(rec.Domain + "-" + rec.Path));
-        for (int k = 0; k < fb.Length; k++)
-        {
-            fileName.Append(fb[k].ToString("x2"));
-        }
+            rec.data = toHex(data, 2, 4, 4, 4, 4, 4, 4, 4, 8, 1, 1);
 
-        rec.key = fileName.ToString();
-         */
-        
-        std::string fileId = md5(domain + "-" + path);
+            rec.Mode = BigEndianBitConverter.ToUInt16(data, 0);
+            rec.alwaysZero = BigEndianBitConverter.ToInt32(data, 2);
+            rec.inode = BigEndianBitConverter.ToUInt32(data, 6);
+            rec.UserId = BigEndianBitConverter.ToUInt32(data, 10);      // or maybe GroupId (don't care...)
+            rec.GroupId = BigEndianBitConverter.ToUInt32(data, 14);     // or maybe UserId
 
-        if (domainInFile == domain)
-        {
-            ITunesFile *file = new ITunesFile();
-            file->relativePath = path;
-            file->fileId = fileId;
+            rec.aTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 18));
+            rec.bTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 22));
+            rec.cTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 26));
+
+            rec.FileLength = BigEndianBitConverter.ToInt64(data, 30);
+
+            rec.flag = data[38];
+             */
             
-            m_files.push_back(file);
+            int propertyCount = fixedData[39];
+            
+            // rec.Properties = new MBFileRecord.Property[rec.PropertyCount];
+            for (int j = 0; j < propertyCount; ++j)
+            {
+                reader.skipString();
+                reader.skipString();
+            }
         }
+        else
+        {
+            reader.read(path);
+            reader.read(linkTarget);
+            reader.readD(dataHash);
+            reader.readD(alwaysNull);
+            
+            reader.read(fixedData, 40);
+            /*
+            
+            // rec.data = toHex(data, 2, 4, 4, 4, 4, 4, 4, 4, 8, 1, 1);
+
+            rec.Mode = BigEndianBitConverter.ToUInt16(data, 0);
+            rec.alwaysZero = BigEndianBitConverter.ToInt32(data, 2);
+            rec.inode = BigEndianBitConverter.ToUInt32(data, 6);
+            rec.UserId = BigEndianBitConverter.ToUInt32(data, 10);      // or maybe GroupId (don't care...)
+            rec.GroupId = BigEndianBitConverter.ToUInt32(data, 14);     // or maybe UserId
+
+            rec.aTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 18));
+            rec.bTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 22));
+            rec.cTime = unixEpoch.AddSeconds(BigEndianBitConverter.ToUInt32(data, 26));
+
+            rec.FileLength = BigEndianBitConverter.ToInt64(data, 30);
+
+             */
+            fileMode = (fixedData[0] << 8) | fixedData[1];
+            
+            isDir = S_ISDIR(fileMode);
+            
+            // unsigned char flags = fixedData[38];
+            
+            if (onlyFile && isDir)
+            {
+                skipped = true;
+            }
+            
+            unsigned int aTime = GetBigEndianInteger(fixedData, 18);
+            unsigned int bTime = GetBigEndianInteger(fixedData, 22);
+            unsigned int cTime = GetBigEndianInteger(fixedData, 26);
+
+            int propertyCount = fixedData[39];
+            
+            // rec.Properties = new MBFileRecord.Property[rec.PropertyCount];
+            for (int j = 0; j < propertyCount; ++j)
+            {
+                if (skipped)
+                {
+                    reader.skipString(); // name
+                    reader.skipString(); // value
+                }
+                else
+                {
+                    std::string name;
+                    std::string value;
+                    
+                    reader.read(name);
+                    reader.read(value);
+                }
+                
+            }
+            /*
+            StringBuilder fileName = new StringBuilder();
+            byte[] fb = hasher.ComputeHash(ASCIIEncoding.UTF8.GetBytes(rec.Domain + "-" + rec.Path));
+            for (int k = 0; k < fb.Length; k++)
+            {
+                fileName.Append(fb[k].ToString("x2"));
+            }
+
+            rec.key = fileName.ToString();
+             */
+            
+            if (!skipped)
+            {
+                ITunesFile *file = new ITunesFile();
+                file->relativePath = path;
+                file->fileId = sha1(domain + "-" + path);
+                file->flags = isDir ? 2 : 1;
+                
+                m_files.push_back(file);
+            }
+            
+        }
+        
+        
     }
 
     return true;

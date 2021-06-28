@@ -97,7 +97,7 @@ public:
         int b0 = m_ifs.get();
         int b1 = m_ifs.get();
         
-        if (b0 == 255 && b1 == 255)
+        if ((b0 == 255 && b1 == 255) || (b0 == 0 && b1 == 0))
         {
             str.clear();
             return true;
@@ -184,6 +184,11 @@ public:
         int b0 = m_ifs.get();
         int b1 = m_ifs.get();
         
+        if ((b0 == 255 && b1 == 255) || (b0 == 0 && b1 == 0))
+        {
+            return true;
+        }
+        
         if (b0 == std::ifstream::traits_type::eof() || b1 == std::ifstream::traits_type::eof())
         {
             return false;
@@ -191,6 +196,10 @@ public:
         
         int lengthOfString = b0 * 256 + b1;
         m_ifs.seekg(lengthOfString, std::ios_base::cur);
+        
+#ifndef NDEBUG
+        m_pos = m_ifs.tellg();
+#endif
 
         return true;
     }
